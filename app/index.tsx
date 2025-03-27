@@ -8,8 +8,8 @@ import {
   TouchableOpacity,
 } from "react-native";
 
-const BREAK_TIME = 2;
-const WORK_TIME = 1;
+const BREAK_TIME = 5;
+const WORK_TIME = 25;
 const LONG_BREAK = 20;
 
 export default function Index() {
@@ -75,7 +75,11 @@ export default function Index() {
         <Text style={styles.headerTxt}>{currentMode}</Text>
       </View>
       <ImageBackground
-        source={require("../assets/images/pomodora.png")}
+        source={
+          currentMode === "Work"
+            ? require("../assets/images/pomodora.png")
+            : require("../assets/images/pomodora2.png")
+        }
         resizeMode="contain"
       >
         <View style={styles.timerContainer}>
@@ -154,8 +158,8 @@ const styles = StyleSheet.create({
   },
   timerTxt: {
     color: COLORS.WHITE,
-    fontWeight: "condensedBold",
-    fontSize: 30,
+    fontWeight: "bold",
+    fontSize: 40,
     marginTop: 70,
   },
   tickTxt: {
