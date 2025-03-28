@@ -1,16 +1,108 @@
 import { COLORS } from "@/constants/colors";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   StyleSheet,
   Text,
   View,
   ImageBackground,
   TouchableOpacity,
+  Platform,
+  AppState,
+  AppStateStatus,
 } from "react-native";
+import * as Device from "expo-device";
+import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
 
 const BREAK_TIME = 5;
 const WORK_TIME = 25;
 const LONG_BREAK = 20;
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
+async function sendPushNotification(
+  expoPushToken: string,
+  title: string,
+  body: string
+) {
+  console.log("Mother Ghoose");
+  const message = {
+    to: expoPushToken,
+    sound: "default",
+    title: title,
+    body: body,
+    data: { someData: "goes here" },
+  };
+
+  await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Accept-encoding": "gzip, deflate",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(message),
+  });
+}
+
+async function registerForPushNotificationsAsync() {
+  if (Device.isDevice) {
+    const { status: existingStatus } =
+      await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    if (existingStatus !== "granted") {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+
+    if (finalStatus !== "granted") {
+      handleRegistrationError(
+        "Permission not granted to get push token for push notification!"
+      );
+      return;
+    }
+
+    const projectId =
+      Constants?.expoConfig?.extra?.eas?.projectId ??
+      Constants?.easConfig?.projectId;
+    if (!projectId) {
+      handleRegistrationError("Project ID not found");
+    }
+    try {
+      const pushTokenString = (
+        await Notifications.getExpoPushTokenAsync({
+          projectId,
+        })
+      ).data;
+      console.log(pushTokenString);
+      return pushTokenString;
+    } catch (e: unknown) {
+      handleRegistrationError(`${e}`);
+    }
+  } else {
+    handleRegistrationError("Must use physical device for push notifications");
+  }
+
+  if (Platform.OS === "android") {
+    Notifications.setNotificationChannelAsync("default", {
+      name: "default",
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: "#FF231F7C",
+    });
+  }
+}
+
+function handleRegistrationError(errorMessage: string) {
+  alert(errorMessage);
+  throw new Error(errorMessage);
+}
 
 export default function Index() {
   const [currentMode, setCurrentMode] = useState("Timer");
@@ -18,6 +110,17 @@ export default function Index() {
   const [currentTimer, setCurrentTimer] = useState<number>(0);
   const [activeTimer, setActiveTimer] = useState<NodeJS.Timeout | null>();
   const [totalWorks, setTotalWorks] = useState(0);
+
+  const [expoPushToken, setExpoPushToken] = useState("");
+  const [notification, setNotification] = useState<
+    Notifications.Notification | undefined
+  >(undefined);
+  const notificationListener = useRef<Notifications.EventSubscription>();
+  const responseListener = useRef<Notifications.EventSubscription>();
+
+  const [appState, setAppState] = useState<AppStateStatus>(
+    AppState.currentState
+  );
 
   const countDown = () => {
     if (activeTimer) clearInterval(activeTimer);
@@ -37,7 +140,7 @@ export default function Index() {
     }, 1000);
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     if (turn % 8 === 0) {
       setCurrentTimer(LONG_BREAK * 60);
       setCurrentMode("Long Break");
@@ -56,7 +159,7 @@ export default function Index() {
     setTurn((t) => t + 1);
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (activeTimer) clearInterval(activeTimer);
     setTurn(1);
     setCurrentTimer(0);
@@ -68,12 +171,80 @@ export default function Index() {
     if (currentMode !== "Timer" && currentTimer === 0) handleStart();
   }, [currentTimer]);
 
+  useEffect(() => {
+    registerForPushNotificationsAsync()
+      .then((token) => setExpoPushToken(token ?? ""))
+      .catch((error: any) => setExpoPushToken(`${error}`));
+
+    notificationListener.current =
+      Notifications.addNotificationReceivedListener((notification) => {
+        setNotification(notification);
+      });
+
+    responseListener.current =
+      Notifications.addNotificationResponseReceivedListener((response) => {
+        console.log(response);
+      });
+
+    return () => {
+      notificationListener.current &&
+        Notifications.removeNotificationSubscription(
+          notificationListener.current
+        );
+      responseListener.current &&
+        Notifications.removeNotificationSubscription(responseListener.current);
+    };
+  }, []);
+
+  const backgroundTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let backgroundTimestamp: number | null = null;
+
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === "active") {
+        if (backgroundTimeRef.current) {
+          const elapsedSeconds = Math.floor(
+            (Date.now() - backgroundTimeRef.current) / 1000
+          );
+          setCurrentTimer((prev) => Math.max(0, prev - elapsedSeconds)); // Adjust timer
+          backgroundTimeRef.current = null; // Reset ref
+        }
+      } else if (nextAppState === "background") {
+        backgroundTimeRef.current = Date.now();
+      }
+      setAppState(nextAppState);
+    };
+
+    const subscription = AppState.addEventListener(
+      "change",
+      handleAppStateChange
+    );
+
+    return () => {
+      subscription.remove(); // Clean up the listener
+    };
+  }, []);
+  useEffect(() => {
+    if (currentMode !== "Timer") {
+      console.log("Hellow");
+      sendPushNotification(
+        expoPushToken,
+        currentMode,
+        `${String(Math.floor(currentTimer / 60)).padStart(2, "0")}:${String(
+          currentTimer % 60
+        ).padStart(2, "0")}`
+      );
+    }
+  }, [currentMode]);
+
   return (
     <View style={styles.container}>
       <View>
         {/* Timer header */}
         <Text style={styles.headerTxt}>{currentMode}</Text>
       </View>
+
       <ImageBackground
         source={
           currentMode === "Work"
